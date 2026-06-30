@@ -33,6 +33,7 @@ local state = {
     collapsed = false,
     stats = {
         qiClicks = 0,
+        breakthroughAttempts = 0,
         breakthroughs = 0,
         qiUpgrades = 0,
         insightResets = 0,
@@ -56,6 +57,7 @@ local state = {
         resetExtraRealms = 25,
         resetGainMultiplier = 25,
     },
+    lastRealm = nil,
     qiUpgradePriority = {
         "QiMultiplier",
         "BreakthroughLuck",
@@ -83,6 +85,51 @@ local function safeFire(statName, remote, ...)
     else
         state.stats.errors += 1
         warn("[ImmortalityAuto] " .. remote.Name .. " failed: " .. tostring(err))
+    end
+end
+
+local function getRealm()
+    local value = tonumber(player:GetAttribute("Realm"))
+
+    if value then
+        return math.floor(value)
+    end
+
+    local leaderstats = player:FindFirstChild("leaderstats")
+    local realmValue = leaderstats and leaderstats:FindFirstChild("Realm")
+    local text = realmValue and tostring(realmValue.Value) or ""
+    return tonumber(text:match("%d+"))
+end
+
+local function teleportToRealmButtonTop()
+    local character = player.Character or player.CharacterAdded:Wait()
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    local realmButton = workspace:WaitForChild("RealmButton", 2)
+    local realmButtonTop = realmButton and realmButton:WaitForChild("RealmButtonTop", 2)
+
+    if rootPart and realmButtonTop then
+        rootPart.CFrame = realmButtonTop.CFrame + Vector3.new(0, 4, 0)
+    end
+
+    return realmButtonTop
+end
+
+local function fireBreakthrough()
+    local ok, err = pcall(function()
+        local realmButtonTop = teleportToRealmButtonTop()
+
+        if realmButtonTop and typeof(firesignal) == "function" then
+            firesignal(remotes.realmPress.OnClientEvent, realmButtonTop, false)
+        else
+            remotes.realmPress:FireServer()
+        end
+    end)
+
+    if ok then
+        state.stats.breakthroughAttempts += 1
+    else
+        state.stats.errors += 1
+        warn("[ImmortalityAuto] breakthrough failed: " .. tostring(err))
     end
 end
 
@@ -220,7 +267,7 @@ local function pressRealmButton(standTime)
             firetouchinterest(root, top, 0)
             task.wait(0.04)
             firetouchinterest(root, top, 1)
-            state.stats.breakthroughs += 1
+            state.stats.breakthroughAttempts += 1
             task.wait(0.04)
         end
 
@@ -234,7 +281,7 @@ local function pressRealmButton(standTime)
         return
     end
 
-    safeFire("breakthroughs", remotes.realmPress)
+    safeFire("breakthroughAttempts", remotes.realmPress)
 end
 
 local function shouldResetInsight()
@@ -611,11 +658,20 @@ end)
 
 task.spawn(function()
     while state.running do
+        local currentRealm = getRealm()
+        if currentRealm then
+            if state.lastRealm and currentRealm > state.lastRealm then
+                state.stats.breakthroughs += currentRealm - state.lastRealm
+            end
+            state.lastRealm = currentRealm
+        end
+
         status.Text = string.format(
-            "Realm: #%d | Qi: %d | Breakthroughs: %d | Qi upgrades: %d\nInsight resets: %d | Skips: %d | Insight upgrades: %d | Errors: %d\n%s",
+            "Realm: #%d | Qi: %d | Breakthroughs: %d/%d | Qi upgrades: %d\nInsight resets: %d | Skips: %d | Insight upgrades: %d | Errors: %d\n%s",
             tonumber(player:GetAttribute("Realm")) or 0,
             state.stats.qiClicks,
             state.stats.breakthroughs,
+            state.stats.breakthroughAttempts,
             state.stats.qiUpgrades,
             state.stats.insightResets,
             state.stats.insightSkips,
