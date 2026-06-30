@@ -52,6 +52,7 @@ local state = {
         insightResetInterval = 1.25,
         insightUpgradeInterval = 0.85,
         breakthroughBurst = 8,
+        breakthroughStandTime = 1.4,
         resetExtraRealms = 25,
         resetGainMultiplier = 25,
     },
@@ -200,16 +201,36 @@ local function getRealmButtonTop()
     return nil
 end
 
-local function pressRealmButton()
+local function pressRealmButton(standTime)
     local top = getRealmButtonTop()
     local character = player.Character
     local root = character and character:FindFirstChild("HumanoidRootPart")
 
     if top and root and firetouchinterest then
-        firetouchinterest(root, top, 0)
-        task.wait(0.015)
-        firetouchinterest(root, top, 1)
-        state.stats.breakthroughs += 1
+        local originalCFrame = root.CFrame
+        local originalAssemblyLinearVelocity = root.AssemblyLinearVelocity
+        local originalAssemblyAngularVelocity = root.AssemblyAngularVelocity
+        local deadline = os.clock() + math.clamp(tonumber(standTime) or 1.4, 0.2, 10)
+        local standCFrame = top.CFrame + top.CFrame.UpVector * (top.Size.Y * 0.5 + 3)
+
+        while state.running and state.settings.autoBreakthrough and os.clock() < deadline do
+            root.CFrame = standCFrame
+            root.AssemblyLinearVelocity = Vector3.zero
+            root.AssemblyAngularVelocity = Vector3.zero
+            firetouchinterest(root, top, 0)
+            task.wait(0.04)
+            firetouchinterest(root, top, 1)
+            state.stats.breakthroughs += 1
+            task.wait(0.04)
+        end
+
+        if root and root.Parent then
+            root.CFrame = originalCFrame
+            root.AssemblyLinearVelocity = originalAssemblyLinearVelocity
+            root.AssemblyAngularVelocity = originalAssemblyAngularVelocity
+        end
+
+        state.statusNote = "Spoofed Realm button stand"
         return
     end
 
@@ -254,7 +275,7 @@ local main = Instance.new("Frame")
 main.Name = "Main"
 main.AnchorPoint = Vector2.new(0, 0)
 main.Position = UDim2.fromOffset(24, 160)
-main.Size = UDim2.fromOffset(360, 520)
+main.Size = UDim2.fromOffset(360, 610)
 main.BackgroundColor3 = Color3.fromRGB(18, 20, 28)
 main.BorderSizePixel = 0
 main.Parent = gui
@@ -492,6 +513,7 @@ local function makeNumberRow(labelText, settingKey, minValue, maxValue)
 end
 
 makeNumberRow("Breakthrough Burst", "breakthroughBurst", 1, 50)
+makeNumberRow("Breakthrough Stand Time", "breakthroughStandTime", 0.2, 10)
 makeNumberRow("Reset Extra Realms", "resetExtraRealms", 0, 1000)
 makeNumberRow("Reset Gain x Current", "resetGainMultiplier", 1, 1000000)
 
@@ -536,7 +558,7 @@ end)
 collapseButton.Activated:Connect(function()
     state.collapsed = not state.collapsed
     body.Visible = not state.collapsed
-    main.Size = state.collapsed and UDim2.fromOffset(360, 44) or UDim2.fromOffset(360, 520)
+    main.Size = state.collapsed and UDim2.fromOffset(360, 44) or UDim2.fromOffset(360, 610)
     collapseButton.Text = state.collapsed and "+" or "-"
 end)
 
@@ -556,12 +578,13 @@ loopEvery("breakthroughInterval", "autoBreakthrough", function()
     end
 
     local burst = math.floor(tonumber(state.settings.breakthroughBurst) or 1)
+    local standTime = tonumber(state.settings.breakthroughStandTime) or 1.4
     for _ = 1, math.clamp(burst, 1, 50) do
         if not state.running or not state.settings.autoBreakthrough then
             break
         end
 
-        pressRealmButton()
+        pressRealmButton(standTime)
         task.wait(0.035)
     end
 end)
