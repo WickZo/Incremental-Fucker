@@ -38,6 +38,7 @@ local state = {
         insightResets = 0,
         insightUpgrades = 0,
         essenceUpgrades = 0,
+        starsCollected = 0,
         errors = 0,
     },
     settings = {
@@ -47,12 +48,16 @@ local state = {
         autoInsightReset = false,
         autoInsightUpgrades = false,
         autoEssenceUpgrades = false,
+        autoStars = true,
         qiInterval = 0.08,
         breakthroughInterval = 0.2,
         qiUpgradeInterval = 0.55,
         insightResetInterval = 1.25,
         insightUpgradeInterval = 0.85,
         essenceUpgradeInterval = 0.85,
+        starCollectInterval = 1.2,
+        starCollectBatch = 3,
+        starCollectHoldTime = 0.06,
         insightResetWait = 120,
     },
     qiUpgradePriority = {
@@ -228,6 +233,87 @@ local function loopEvery(intervalKey, enabledKey, fn)
     end)
 end
 
+local function isMovementRequested()
+    local character = player.Character
+    local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if humanoid and humanoid.MoveDirection.Magnitude > 0.05 then
+        return true
+    end
+
+    return UserInputService:IsKeyDown(Enum.KeyCode.W)
+        or UserInputService:IsKeyDown(Enum.KeyCode.A)
+        or UserInputService:IsKeyDown(Enum.KeyCode.S)
+        or UserInputService:IsKeyDown(Enum.KeyCode.D)
+        or UserInputService:IsKeyDown(Enum.KeyCode.Space)
+        or UserInputService:IsKeyDown(Enum.KeyCode.Up)
+        or UserInputService:IsKeyDown(Enum.KeyCode.Down)
+        or UserInputService:IsKeyDown(Enum.KeyCode.Left)
+        or UserInputService:IsKeyDown(Enum.KeyCode.Right)
+end
+
+local function getStarVisualFolder()
+    local folder = workspace:FindFirstChild("StarForgingLocalVisuals")
+    if folder and folder:IsA("Folder") then
+        return folder
+    end
+
+    return workspace:FindFirstChild("StarForgingLocalVisuals", true)
+end
+
+local function collectVisibleStars()
+    local character = player.Character
+    local root = character and character:FindFirstChild("HumanoidRootPart")
+    local folder = getStarVisualFolder()
+
+    if not (root and folder) then
+        return
+    end
+
+    if isMovementRequested() then
+        return
+    end
+
+    local originalCFrame = root.CFrame
+    local originalAssemblyLinearVelocity = root.AssemblyLinearVelocity
+    local originalAssemblyAngularVelocity = root.AssemblyAngularVelocity
+    local maxStars = math.clamp(math.floor(tonumber(state.settings.starCollectBatch) or 3), 1, 50)
+    local holdTime = math.clamp(tonumber(state.settings.starCollectHoldTime) or 0.06, 0.03, 1)
+    local collected = 0
+
+    for _, star in ipairs(folder:GetChildren()) do
+        if collected >= maxStars or not state.running or not state.settings.autoStars then
+            break
+        end
+
+        if star:GetAttribute("StarId") then
+            local part = star:FindFirstChildWhichIsA("BasePart", true)
+            if part then
+                root.CFrame = CFrame.new(part.Position + Vector3.new(0, 2.8, 0))
+                root.AssemblyLinearVelocity = Vector3.zero
+                root.AssemblyAngularVelocity = Vector3.zero
+                task.wait(holdTime)
+                if root and root.Parent then
+                    root.CFrame = originalCFrame
+                    root.AssemblyLinearVelocity = originalAssemblyLinearVelocity
+                    root.AssemblyAngularVelocity = originalAssemblyAngularVelocity
+                end
+                collected += 1
+                task.wait(0.015)
+            end
+        end
+    end
+
+    if root and root.Parent then
+        root.CFrame = originalCFrame
+        root.AssemblyLinearVelocity = originalAssemblyLinearVelocity
+        root.AssemblyAngularVelocity = originalAssemblyAngularVelocity
+    end
+
+    if collected > 0 then
+        state.stats.starsCollected += collected
+    end
+end
+
 local function teleportToRealmButtonTop()
     local character = player.Character or player.CharacterAdded:Wait()
     local rootPart = character:FindFirstChild("HumanoidRootPart")
@@ -265,7 +351,7 @@ local main = Instance.new("Frame")
 main.Name = "Main"
 main.AnchorPoint = Vector2.new(0, 0)
 main.Position = UDim2.fromOffset(24, 160)
-main.Size = UDim2.fromOffset(360, 560)
+main.Size = UDim2.fromOffset(360, 690)
 main.BackgroundColor3 = Color3.fromRGB(18, 20, 28)
 main.BorderSizePixel = 0
 main.Parent = gui
@@ -453,6 +539,7 @@ makeRow("Auto Qi Upgrades", "autoQiUpgrades", "qiUpgradeInterval")
 makeRow("Auto Insight Reset", "autoInsightReset", "insightResetInterval")
 makeRow("Auto Insight Upgrades", "autoInsightUpgrades", "insightUpgradeInterval")
 makeRow("Auto Essence Upgrades", "autoEssenceUpgrades", "essenceUpgradeInterval")
+makeRow("Auto Stars", "autoStars", "starCollectInterval")
 
 local function makeNumberRow(labelText, settingKey, minValue, maxValue)
     local row = Instance.new("Frame")
@@ -504,13 +591,15 @@ local function makeNumberRow(labelText, settingKey, minValue, maxValue)
 end
 
 makeNumberRow("Insight Reset Wait", "insightResetWait", 1, 3600)
+makeNumberRow("Star Batch", "starCollectBatch", 1, 50)
+makeNumberRow("Star Hold Time", "starCollectHoldTime", 0.03, 1)
 
 local footer = Instance.new("TextLabel")
 footer.Name = "Footer"
 footer.Size = UDim2.new(1, 0, 0, 52)
 footer.BackgroundTransparency = 1
 footer.Font = Enum.Font.Gotham
-footer.Text = "Insight upgrades use priority order. Reset waits for no breakthrough."
+footer.Text = "Auto Stars blink-collects visible stars while idle, then restores your spot."
 footer.TextColor3 = Color3.fromRGB(163, 171, 198)
 footer.TextSize = 12
 footer.TextWrapped = true
@@ -546,7 +635,7 @@ end)
 collapseButton.Activated:Connect(function()
     state.collapsed = not state.collapsed
     body.Visible = not state.collapsed
-    main.Size = state.collapsed and UDim2.fromOffset(360, 44) or UDim2.fromOffset(360, 560)
+    main.Size = state.collapsed and UDim2.fromOffset(360, 44) or UDim2.fromOffset(360, 690)
     collapseButton.Text = state.collapsed and "+" or "-"
 end)
 
@@ -589,6 +678,10 @@ loopEvery("essenceUpgradeInterval", "autoEssenceUpgrades", function()
     safeFire("essenceUpgrades", remotes.purchaseUpgrade, upgradeId, true)
 end)
 
+loopEvery("starCollectInterval", "autoStars", function()
+    collectVisibleStars()
+end)
+
 task.spawn(function()
     while state.running do
         local currentRealm = getRealm()
@@ -600,13 +693,14 @@ task.spawn(function()
         end
 
         status.Text = string.format(
-            "Qi: %d | Breakthroughs: %d | Qi upgrades: %d\nInsight resets: %d | Insight upgrades: %d | Essence upgrades: %d\nReset wait: %ds | Errors: %d",
+            "Qi: %d | Breakthroughs: %d | Qi upgrades: %d\nInsight resets: %d | Insight upgrades: %d | Essence upgrades: %d\nStars: %d | Reset wait: %ds | Errors: %d",
             state.stats.qiClicks,
             state.stats.breakthroughs,
             state.stats.qiUpgrades,
             state.stats.insightResets,
             state.stats.insightUpgrades,
             state.stats.essenceUpgrades,
+            state.stats.starsCollected,
             math.max(0, math.ceil((tonumber(state.settings.insightResetWait) or 120) - (os.clock() - state.lastBreakthroughAt))),
             state.stats.errors
         )
