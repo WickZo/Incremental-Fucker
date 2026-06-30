@@ -38,7 +38,6 @@ local state = {
         qiUpgrades = 0,
         insightResets = 0,
         insightUpgrades = 0,
-        insightSkips = 0,
         errors = 0,
     },
     settings = {
@@ -48,14 +47,10 @@ local state = {
         autoInsightReset = true,
         autoInsightUpgrades = true,
         qiInterval = 0.08,
-        breakthroughInterval = 0.25,
+        breakthroughInterval = 0.2,
         qiUpgradeInterval = 0.55,
         insightResetInterval = 1.25,
         insightUpgradeInterval = 0.85,
-        breakthroughBurst = 8,
-        breakthroughStandTime = 1.4,
-        resetExtraRealms = 25,
-        resetGainMultiplier = 25,
     },
     lastRealm = nil,
     qiUpgradePriority = {
@@ -70,7 +65,6 @@ local state = {
     },
     qiIndex = 1,
     insightIndex = 1,
-    statusNote = "Loaded",
 }
 
 _G.ImmortalityAuto = state
@@ -144,174 +138,6 @@ local function loopEvery(intervalKey, enabledKey, fn)
     end)
 end
 
-local function bigFromAttributes(prefix)
-    local mantissa = player:GetAttribute(prefix .. "Mantissa")
-    local exponent = player:GetAttribute(prefix .. "Exponent")
-    if type(mantissa) ~= "number" or type(exponent) ~= "number" then
-        return { m = 0, e = 0 }
-    end
-    return { m = mantissa, e = exponent }
-end
-
-local function normalizeBig(value)
-    if not value or value.m <= 0 then
-        return { m = 0, e = 0 }
-    end
-
-    local mantissa = value.m
-    local exponent = value.e
-
-    while mantissa >= 10 do
-        mantissa /= 10
-        exponent += 1
-    end
-
-    while mantissa > 0 and mantissa < 1 do
-        mantissa *= 10
-        exponent -= 1
-    end
-
-    return { m = mantissa, e = exponent }
-end
-
-local function multiplyBig(value, multiplier)
-    multiplier = tonumber(multiplier) or 1
-    if multiplier <= 0 then
-        multiplier = 1
-    end
-
-    return normalizeBig({
-        m = (value and value.m or 0) * multiplier,
-        e = value and value.e or 0,
-    })
-end
-
-local function compareBig(left, right)
-    left = normalizeBig(left)
-    right = normalizeBig(right)
-
-    if left.m <= 0 and right.m <= 0 then
-        return 0
-    end
-
-    if left.m <= 0 then
-        return -1
-    end
-
-    if right.m <= 0 then
-        return 1
-    end
-
-    if left.e ~= right.e then
-        return left.e > right.e and 1 or -1
-    end
-
-    if math.abs(left.m - right.m) < 0.000001 then
-        return 0
-    end
-
-    return left.m > right.m and 1 or -1
-end
-
-local function formatBig(value)
-    value = normalizeBig(value)
-    if value.m <= 0 then
-        return "0"
-    end
-
-    if value.e < 6 then
-        return tostring(math.floor(value.m * 10 ^ value.e))
-    end
-
-    return string.format("%.2fe%d", value.m, value.e)
-end
-
-local function canAffordBreakthrough()
-    return compareBig(bigFromAttributes("Qi"), bigFromAttributes("RealmNextBreakthroughCost")) >= 0
-end
-
-local function getRealmButtonTop()
-    local realmButton = workspace:FindFirstChild("RealmButton")
-    if realmButton then
-        local top = realmButton:FindFirstChild("RealmButtonTop")
-        if top and top:IsA("BasePart") then
-            return top
-        end
-    end
-
-    for _, item in ipairs(workspace:GetDescendants()) do
-        if item:IsA("BasePart") and item.Name == "RealmButtonTop" then
-            return item
-        end
-    end
-
-    return nil
-end
-
-local function pressRealmButton(standTime)
-    local top = getRealmButtonTop()
-    local character = player.Character
-    local root = character and character:FindFirstChild("HumanoidRootPart")
-
-    if top and root and firetouchinterest then
-        local originalCFrame = root.CFrame
-        local originalAssemblyLinearVelocity = root.AssemblyLinearVelocity
-        local originalAssemblyAngularVelocity = root.AssemblyAngularVelocity
-        local deadline = os.clock() + math.clamp(tonumber(standTime) or 1.4, 0.2, 10)
-        local standCFrame = top.CFrame + top.CFrame.UpVector * (top.Size.Y * 0.5 + 3)
-
-        while state.running and state.settings.autoBreakthrough and os.clock() < deadline do
-            root.CFrame = standCFrame
-            root.AssemblyLinearVelocity = Vector3.zero
-            root.AssemblyAngularVelocity = Vector3.zero
-            firetouchinterest(root, top, 0)
-            task.wait(0.04)
-            firetouchinterest(root, top, 1)
-            state.stats.breakthroughAttempts += 1
-            task.wait(0.04)
-        end
-
-        if root and root.Parent then
-            root.CFrame = originalCFrame
-            root.AssemblyLinearVelocity = originalAssemblyLinearVelocity
-            root.AssemblyAngularVelocity = originalAssemblyAngularVelocity
-        end
-
-        state.statusNote = "Spoofed Realm button stand"
-        return
-    end
-
-    safeFire("breakthroughAttempts", remotes.realmPress)
-end
-
-local function shouldResetInsight()
-    local realm = tonumber(player:GetAttribute("Realm")) or 0
-    local minRealm = tonumber(player:GetAttribute("InsightResetMinRealm")) or 1
-    local targetRealm = minRealm + math.max(0, tonumber(state.settings.resetExtraRealms) or 0)
-
-    if player:GetAttribute("InsightResetRequirementMet") ~= true then
-        state.statusNote = "Insight reset waiting for requirement"
-        return false
-    end
-
-    if realm < targetRealm then
-        state.statusNote = "Insight reset waiting for realm " .. tostring(targetRealm)
-        return false
-    end
-
-    local currentInsight = bigFromAttributes("Insight")
-    local previewGain = bigFromAttributes("InsightResetPreview")
-    local neededGain = multiplyBig(currentInsight, state.settings.resetGainMultiplier)
-
-    if currentInsight.m > 0 and compareBig(previewGain, neededGain) < 0 then
-        state.statusNote = "Insight reset waiting for " .. tostring(state.settings.resetGainMultiplier) .. "x gain"
-        return false
-    end
-
-    state.statusNote = "Insight reset ready: +" .. formatBig(previewGain)
-    return true
-end
-
 local gui = Instance.new("ScreenGui")
 gui.Name = "ImmortalityAutoGui"
 gui.ResetOnSpawn = false
@@ -322,7 +148,7 @@ local main = Instance.new("Frame")
 main.Name = "Main"
 main.AnchorPoint = Vector2.new(0, 0)
 main.Position = UDim2.fromOffset(24, 160)
-main.Size = UDim2.fromOffset(360, 610)
+main.Size = UDim2.fromOffset(360, 428)
 main.BackgroundColor3 = Color3.fromRGB(18, 20, 28)
 main.BorderSizePixel = 0
 main.Parent = gui
@@ -510,66 +336,12 @@ makeRow("Auto Qi Upgrades", "autoQiUpgrades", "qiUpgradeInterval")
 makeRow("Auto Insight Reset", "autoInsightReset", "insightResetInterval")
 makeRow("Auto Insight Upgrades", "autoInsightUpgrades", "insightUpgradeInterval")
 
-local function makeNumberRow(labelText, settingKey, minValue, maxValue)
-    local row = Instance.new("Frame")
-    row.Name = settingKey .. "Row"
-    row.Size = UDim2.new(1, 0, 0, 38)
-    row.BackgroundColor3 = Color3.fromRGB(24, 27, 38)
-    row.BorderSizePixel = 0
-    row.Parent = body
-
-    local rowCorner = Instance.new("UICorner")
-    rowCorner.CornerRadius = UDim.new(0, 8)
-    rowCorner.Parent = row
-
-    local label = Instance.new("TextLabel")
-    label.BackgroundTransparency = 1
-    label.Position = UDim2.fromOffset(10, 0)
-    label.Size = UDim2.new(1, -76, 1, 0)
-    label.Font = Enum.Font.GothamSemibold
-    label.Text = labelText
-    label.TextColor3 = Color3.fromRGB(238, 242, 255)
-    label.TextSize = 12
-    label.TextXAlignment = Enum.TextXAlignment.Left
-    label.Parent = row
-
-    local input = Instance.new("TextBox")
-    input.Name = "Value"
-    input.Position = UDim2.new(1, -58, 0, 6)
-    input.Size = UDim2.fromOffset(48, 26)
-    input.BackgroundColor3 = Color3.fromRGB(13, 15, 22)
-    input.BorderSizePixel = 0
-    input.ClearTextOnFocus = false
-    input.Font = Enum.Font.Gotham
-    input.Text = tostring(state.settings[settingKey])
-    input.TextColor3 = Color3.fromRGB(230, 235, 255)
-    input.TextSize = 12
-    input.Parent = row
-
-    local inputCorner = Instance.new("UICorner")
-    inputCorner.CornerRadius = UDim.new(0, 6)
-    inputCorner.Parent = input
-
-    input.FocusLost:Connect(function()
-        local value = tonumber(input.Text)
-        if value then
-            state.settings[settingKey] = math.clamp(value, minValue, maxValue)
-        end
-        input.Text = tostring(state.settings[settingKey])
-    end)
-end
-
-makeNumberRow("Breakthrough Burst", "breakthroughBurst", 1, 50)
-makeNumberRow("Breakthrough Stand Time", "breakthroughStandTime", 0.2, 10)
-makeNumberRow("Reset Extra Realms", "resetExtraRealms", 0, 1000)
-makeNumberRow("Reset Gain x Current", "resetGainMultiplier", 1, 1000000)
-
 local footer = Instance.new("TextLabel")
 footer.Name = "Footer"
 footer.Size = UDim2.new(1, 0, 0, 52)
 footer.BackgroundTransparency = 1
 footer.Font = Enum.Font.Gotham
-footer.Text = "Insight upgrades only buy More Insight. Reset waits for extra realms and gain multiplier."
+footer.Text = "Insight upgrades buy More Insight only. Intervals are seconds."
 footer.TextColor3 = Color3.fromRGB(163, 171, 198)
 footer.TextSize = 12
 footer.TextWrapped = true
@@ -605,7 +377,7 @@ end)
 collapseButton.Activated:Connect(function()
     state.collapsed = not state.collapsed
     body.Visible = not state.collapsed
-    main.Size = state.collapsed and UDim2.fromOffset(360, 44) or UDim2.fromOffset(360, 610)
+    main.Size = state.collapsed and UDim2.fromOffset(360, 44) or UDim2.fromOffset(360, 428)
     collapseButton.Text = state.collapsed and "+" or "-"
 end)
 
@@ -619,21 +391,7 @@ loopEvery("qiInterval", "autoQi", function()
 end)
 
 loopEvery("breakthroughInterval", "autoBreakthrough", function()
-    if not canAffordBreakthrough() then
-        state.statusNote = "Breakthrough waiting for qi"
-        return
-    end
-
-    local burst = math.floor(tonumber(state.settings.breakthroughBurst) or 1)
-    local standTime = tonumber(state.settings.breakthroughStandTime) or 1.4
-    for _ = 1, math.clamp(burst, 1, 50) do
-        if not state.running or not state.settings.autoBreakthrough then
-            break
-        end
-
-        pressRealmButton(standTime)
-        task.wait(0.035)
-    end
+    fireBreakthrough()
 end)
 
 loopEvery("qiUpgradeInterval", "autoQiUpgrades", function()
@@ -643,11 +401,7 @@ loopEvery("qiUpgradeInterval", "autoQiUpgrades", function()
 end)
 
 loopEvery("insightResetInterval", "autoInsightReset", function()
-    if shouldResetInsight() then
-        safeFire("insightResets", remotes.purchaseInsight)
-    else
-        state.stats.insightSkips += 1
-    end
+    safeFire("insightResets", remotes.purchaseInsight)
 end)
 
 loopEvery("insightUpgradeInterval", "autoInsightUpgrades", function()
@@ -667,17 +421,14 @@ task.spawn(function()
         end
 
         status.Text = string.format(
-            "Realm: #%d | Qi: %d | Breakthroughs: %d/%d | Qi upgrades: %d\nInsight resets: %d | Skips: %d | Insight upgrades: %d | Errors: %d\n%s",
-            tonumber(player:GetAttribute("Realm")) or 0,
+            "Qi: %d | Breakthroughs: %d/%d | Qi upgrades: %d\nInsight resets: %d | Insight upgrades: %d | Errors: %d",
             state.stats.qiClicks,
             state.stats.breakthroughs,
             state.stats.breakthroughAttempts,
             state.stats.qiUpgrades,
             state.stats.insightResets,
-            state.stats.insightSkips,
             state.stats.insightUpgrades,
-            state.stats.errors,
-            state.statusNote
+            state.stats.errors
         )
         task.wait(0.35)
     end
