@@ -37,6 +37,7 @@ local state = {
         qiUpgrades = 0,
         insightResets = 0,
         insightUpgrades = 0,
+        essenceUpgrades = 0,
         errors = 0,
     },
     settings = {
@@ -45,11 +46,14 @@ local state = {
         autoQiUpgrades = false,
         autoInsightReset = false,
         autoInsightUpgrades = false,
+        autoEssenceUpgrades = false,
         qiInterval = 0.08,
         breakthroughInterval = 0.2,
         qiUpgradeInterval = 0.55,
         insightResetInterval = 1.25,
         insightUpgradeInterval = 0.85,
+        essenceUpgradeInterval = 0.85,
+        insightResetWait = 120,
     },
     qiUpgradePriority = {
         "QiMultiplier",
@@ -60,9 +64,27 @@ local state = {
     },
     insightUpgradePriority = {
         "InsightMultiplier",
+        "InsightMarkSpeed",
+        "InsightLuckMultiplier",
+        "InsightQiMultiplier",
+    },
+    insightUpgradeConfig = {
+        InsightMultiplier = { baseCost = 1, costMult = 1.87, maxLevel = 75 },
+        InsightMarkSpeed = { baseCost = 1000, costMult = 1000, maxLevel = 5 },
+        InsightLuckMultiplier = { baseCost = 3, costMult = 1.89, maxLevel = 75 },
+        InsightQiMultiplier = { baseCost = 2, costMult = 1.85, maxLevel = 75 },
+    },
+    essenceUpgradePriority = {
+        "EssenceYield",
+        "RefinementLink",
+        "MoteFlow",
+        "CauldronFocus",
     },
     qiIndex = 1,
     insightIndex = 1,
+    essenceIndex = 1,
+    lastRealm = nil,
+    lastBreakthroughAt = os.clock(),
 }
 
 _G.ImmortalityAuto = state
@@ -78,6 +100,121 @@ local function safeFire(statName, remote, ...)
         state.stats.errors += 1
         warn("[ImmortalityAuto] " .. remote.Name .. " failed: " .. tostring(err))
     end
+end
+
+local function getRealm()
+    local value = tonumber(player:GetAttribute("Realm"))
+
+    if value then
+        return math.floor(value)
+    end
+
+    local leaderstats = player:FindFirstChild("leaderstats")
+    local realmValue = leaderstats and leaderstats:FindFirstChild("Realm")
+    local text = realmValue and tostring(realmValue.Value) or ""
+    return tonumber(text:match("%d+"))
+end
+
+local function bigFromAttributes(prefix)
+    local mantissa = player:GetAttribute(prefix .. "Mantissa")
+    local exponent = player:GetAttribute(prefix .. "Exponent")
+    if type(mantissa) ~= "number" or type(exponent) ~= "number" then
+        return { m = 0, e = 0 }
+    end
+    return { m = mantissa, e = exponent }
+end
+
+local function normalizeBig(value)
+    if not value or value.m <= 0 then
+        return { m = 0, e = 0 }
+    end
+
+    local mantissa = value.m
+    local exponent = value.e
+
+    while mantissa >= 10 do
+        mantissa /= 10
+        exponent += 1
+    end
+
+    while mantissa > 0 and mantissa < 1 do
+        mantissa *= 10
+        exponent -= 1
+    end
+
+    return { m = mantissa, e = exponent }
+end
+
+local function numberToBig(value)
+    return normalizeBig({ m = tonumber(value) or 0, e = 0 })
+end
+
+local function multiplyBig(value, multiplier)
+    multiplier = tonumber(multiplier) or 1
+    if multiplier <= 0 then
+        multiplier = 1
+    end
+
+    return normalizeBig({
+        m = (value and value.m or 0) * multiplier,
+        e = value and value.e or 0,
+    })
+end
+
+local function compareBig(left, right)
+    left = normalizeBig(left)
+    right = normalizeBig(right)
+
+    if left.m <= 0 and right.m <= 0 then
+        return 0
+    end
+
+    if left.m <= 0 then
+        return -1
+    end
+
+    if right.m <= 0 then
+        return 1
+    end
+
+    if left.e ~= right.e then
+        return left.e > right.e and 1 or -1
+    end
+
+    if math.abs(left.m - right.m) < 0.000001 then
+        return 0
+    end
+
+    return left.m > right.m and 1 or -1
+end
+
+local function getInsightUpgradeCost(upgradeId)
+    local config = state.insightUpgradeConfig[upgradeId]
+    local level = tonumber(player:GetAttribute("Upgrade_" .. upgradeId)) or 0
+
+    if not config or level >= config.maxLevel then
+        return nil
+    end
+
+    return multiplyBig(numberToBig(config.baseCost), config.costMult ^ level)
+end
+
+local function getAffordableInsightUpgrade()
+    local insight = bigFromAttributes("Insight")
+
+    for _, upgradeId in ipairs(state.insightUpgradePriority) do
+        local cost = getInsightUpgradeCost(upgradeId)
+        if cost and compareBig(insight, cost) >= 0 then
+            return upgradeId
+        end
+    end
+
+    return nil
+end
+
+local function shouldResetInsight()
+    local waitTime = math.max(1, tonumber(state.settings.insightResetWait) or 120)
+    return os.clock() - state.lastBreakthroughAt >= waitTime
 end
 
 local function loopEvery(intervalKey, enabledKey, fn)
@@ -128,7 +265,7 @@ local main = Instance.new("Frame")
 main.Name = "Main"
 main.AnchorPoint = Vector2.new(0, 0)
 main.Position = UDim2.fromOffset(24, 160)
-main.Size = UDim2.fromOffset(360, 428)
+main.Size = UDim2.fromOffset(360, 560)
 main.BackgroundColor3 = Color3.fromRGB(18, 20, 28)
 main.BorderSizePixel = 0
 main.Parent = gui
@@ -211,7 +348,7 @@ padding.Parent = body
 
 local status = Instance.new("TextLabel")
 status.Name = "Status"
-status.Size = UDim2.new(1, 0, 0, 56)
+status.Size = UDim2.new(1, 0, 0, 68)
 status.BackgroundColor3 = Color3.fromRGB(24, 27, 38)
 status.BorderSizePixel = 0
 status.Font = Enum.Font.Gotham
@@ -315,13 +452,65 @@ makeRow("Auto Breakthrough", "autoBreakthrough", "breakthroughInterval")
 makeRow("Auto Qi Upgrades", "autoQiUpgrades", "qiUpgradeInterval")
 makeRow("Auto Insight Reset", "autoInsightReset", "insightResetInterval")
 makeRow("Auto Insight Upgrades", "autoInsightUpgrades", "insightUpgradeInterval")
+makeRow("Auto Essence Upgrades", "autoEssenceUpgrades", "essenceUpgradeInterval")
+
+local function makeNumberRow(labelText, settingKey, minValue, maxValue)
+    local row = Instance.new("Frame")
+    row.Name = settingKey .. "Row"
+    row.Size = UDim2.new(1, 0, 0, 38)
+    row.BackgroundColor3 = Color3.fromRGB(24, 27, 38)
+    row.BorderSizePixel = 0
+    row.Parent = body
+
+    local rowCorner = Instance.new("UICorner")
+    rowCorner.CornerRadius = UDim.new(0, 8)
+    rowCorner.Parent = row
+
+    local label = Instance.new("TextLabel")
+    label.BackgroundTransparency = 1
+    label.Position = UDim2.fromOffset(10, 0)
+    label.Size = UDim2.new(1, -76, 1, 0)
+    label.Font = Enum.Font.GothamSemibold
+    label.Text = labelText
+    label.TextColor3 = Color3.fromRGB(238, 242, 255)
+    label.TextSize = 12
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = row
+
+    local input = Instance.new("TextBox")
+    input.Name = "Value"
+    input.Position = UDim2.new(1, -58, 0, 6)
+    input.Size = UDim2.fromOffset(48, 26)
+    input.BackgroundColor3 = Color3.fromRGB(13, 15, 22)
+    input.BorderSizePixel = 0
+    input.ClearTextOnFocus = false
+    input.Font = Enum.Font.Gotham
+    input.Text = tostring(state.settings[settingKey])
+    input.TextColor3 = Color3.fromRGB(230, 235, 255)
+    input.TextSize = 12
+    input.Parent = row
+
+    local inputCorner = Instance.new("UICorner")
+    inputCorner.CornerRadius = UDim.new(0, 6)
+    inputCorner.Parent = input
+
+    input.FocusLost:Connect(function()
+        local value = tonumber(input.Text)
+        if value then
+            state.settings[settingKey] = math.clamp(value, minValue, maxValue)
+        end
+        input.Text = tostring(state.settings[settingKey])
+    end)
+end
+
+makeNumberRow("Insight Reset Wait", "insightResetWait", 1, 3600)
 
 local footer = Instance.new("TextLabel")
 footer.Name = "Footer"
 footer.Size = UDim2.new(1, 0, 0, 52)
 footer.BackgroundTransparency = 1
 footer.Font = Enum.Font.Gotham
-footer.Text = "Insight upgrades buy More Insight only. Intervals are seconds."
+footer.Text = "Insight upgrades use priority order. Reset waits for no breakthrough."
 footer.TextColor3 = Color3.fromRGB(163, 171, 198)
 footer.TextSize = 12
 footer.TextWrapped = true
@@ -357,7 +546,7 @@ end)
 collapseButton.Activated:Connect(function()
     state.collapsed = not state.collapsed
     body.Visible = not state.collapsed
-    main.Size = state.collapsed and UDim2.fromOffset(360, 44) or UDim2.fromOffset(360, 428)
+    main.Size = state.collapsed and UDim2.fromOffset(360, 44) or UDim2.fromOffset(360, 560)
     collapseButton.Text = state.collapsed and "+" or "-"
 end)
 
@@ -381,24 +570,44 @@ loopEvery("qiUpgradeInterval", "autoQiUpgrades", function()
 end)
 
 loopEvery("insightResetInterval", "autoInsightReset", function()
-    safeFire("insightResets", remotes.purchaseInsight)
+    if shouldResetInsight() then
+        safeFire("insightResets", remotes.purchaseInsight)
+        state.lastBreakthroughAt = os.clock()
+    end
 end)
 
 loopEvery("insightUpgradeInterval", "autoInsightUpgrades", function()
-    local upgradeId = state.insightUpgradePriority[state.insightIndex]
-    state.insightIndex = state.insightIndex % #state.insightUpgradePriority + 1
-    safeFire("insightUpgrades", remotes.purchaseUpgrade, upgradeId, true)
+    local upgradeId = getAffordableInsightUpgrade()
+    if upgradeId then
+        safeFire("insightUpgrades", remotes.purchaseUpgrade, upgradeId, true)
+    end
+end)
+
+loopEvery("essenceUpgradeInterval", "autoEssenceUpgrades", function()
+    local upgradeId = state.essenceUpgradePriority[state.essenceIndex]
+    state.essenceIndex = state.essenceIndex % #state.essenceUpgradePriority + 1
+    safeFire("essenceUpgrades", remotes.purchaseUpgrade, upgradeId, true)
 end)
 
 task.spawn(function()
     while state.running do
+        local currentRealm = getRealm()
+        if currentRealm then
+            if state.lastRealm and currentRealm > state.lastRealm then
+                state.lastBreakthroughAt = os.clock()
+            end
+            state.lastRealm = currentRealm
+        end
+
         status.Text = string.format(
-            "Qi: %d | Breakthroughs: %d | Qi upgrades: %d\nInsight resets: %d | Insight upgrades: %d | Errors: %d",
+            "Qi: %d | Breakthroughs: %d | Qi upgrades: %d\nInsight resets: %d | Insight upgrades: %d | Essence upgrades: %d\nReset wait: %ds | Errors: %d",
             state.stats.qiClicks,
             state.stats.breakthroughs,
             state.stats.qiUpgrades,
             state.stats.insightResets,
             state.stats.insightUpgrades,
+            state.stats.essenceUpgrades,
+            math.max(0, math.ceil((tonumber(state.settings.insightResetWait) or 120) - (os.clock() - state.lastBreakthroughAt))),
             state.stats.errors
         )
         task.wait(0.35)
