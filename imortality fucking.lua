@@ -40,11 +40,11 @@ local state = {
         errors = 0,
     },
     settings = {
-        autoQi = true,
-        autoBreakthrough = true,
-        autoQiUpgrades = true,
-        autoInsightReset = true,
-        autoInsightUpgrades = true,
+        autoQi = false,
+        autoBreakthrough = false,
+        autoQiUpgrades = false,
+        autoInsightReset = false,
+        autoInsightUpgrades = false,
         qiInterval = 0.08,
         breakthroughInterval = 0.2,
         qiUpgradeInterval = 0.55,
@@ -60,12 +60,6 @@ local state = {
     },
     insightUpgradePriority = {
         "InsightMultiplier",
-        "InsightMultiplier",
-        "InsightQiMultiplier",
-        "InsightMultiplier",
-        "InsightLuckMultiplier",
-        "InsightMultiplier",
-        "InsightMarkSpeed",
     },
     qiIndex = 1,
     insightIndex = 1,
@@ -95,6 +89,33 @@ local function loopEvery(intervalKey, enabledKey, fn)
             task.wait(math.max(0.03, tonumber(state.settings[intervalKey]) or 0.25))
         end
     end)
+end
+
+local function teleportToRealmButtonTop()
+    local character = player.Character or player.CharacterAdded:Wait()
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    local realmButton = workspace:WaitForChild("RealmButton", 2)
+    local realmButtonTop = realmButton and realmButton:WaitForChild("RealmButtonTop", 2)
+
+    if rootPart and realmButtonTop then
+        rootPart.CFrame = realmButtonTop.CFrame + Vector3.new(0, 4, 0)
+    end
+
+    return realmButtonTop
+end
+
+local function fireBreakthrough()
+    local ok, err = pcall(function()
+        teleportToRealmButtonTop()
+        remotes.realmPress:FireServer()
+    end)
+
+    if ok then
+        state.stats.breakthroughs += 1
+    else
+        state.stats.errors += 1
+        warn("[ImmortalityAuto] breakthrough failed: " .. tostring(err))
+    end
 end
 
 local gui = Instance.new("ScreenGui")
@@ -300,7 +321,7 @@ footer.Name = "Footer"
 footer.Size = UDim2.new(1, 0, 0, 52)
 footer.BackgroundTransparency = 1
 footer.Font = Enum.Font.Gotham
-footer.Text = "Priority: More Insight first, then Qi/Luck mixed in. Intervals are seconds."
+footer.Text = "Insight upgrades buy More Insight only. Intervals are seconds."
 footer.TextColor3 = Color3.fromRGB(163, 171, 198)
 footer.TextSize = 12
 footer.TextWrapped = true
@@ -350,7 +371,7 @@ loopEvery("qiInterval", "autoQi", function()
 end)
 
 loopEvery("breakthroughInterval", "autoBreakthrough", function()
-    safeFire("breakthroughs", remotes.realmPress)
+    fireBreakthrough()
 end)
 
 loopEvery("qiUpgradeInterval", "autoQiUpgrades", function()
