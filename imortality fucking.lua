@@ -33,7 +33,6 @@ local state = {
     collapsed = false,
     stats = {
         qiClicks = 0,
-        breakthroughAttempts = 0,
         breakthroughs = 0,
         qiUpgrades = 0,
         insightResets = 0,
@@ -52,7 +51,6 @@ local state = {
         insightResetInterval = 1.25,
         insightUpgradeInterval = 0.85,
     },
-    lastRealm = nil,
     qiUpgradePriority = {
         "QiMultiplier",
         "BreakthroughLuck",
@@ -62,6 +60,12 @@ local state = {
     },
     insightUpgradePriority = {
         "InsightMultiplier",
+        "InsightMultiplier",
+        "InsightQiMultiplier",
+        "InsightMultiplier",
+        "InsightLuckMultiplier",
+        "InsightMultiplier",
+        "InsightMarkSpeed",
     },
     qiIndex = 1,
     insightIndex = 1,
@@ -79,51 +83,6 @@ local function safeFire(statName, remote, ...)
     else
         state.stats.errors += 1
         warn("[ImmortalityAuto] " .. remote.Name .. " failed: " .. tostring(err))
-    end
-end
-
-local function getRealm()
-    local value = tonumber(player:GetAttribute("Realm"))
-
-    if value then
-        return math.floor(value)
-    end
-
-    local leaderstats = player:FindFirstChild("leaderstats")
-    local realmValue = leaderstats and leaderstats:FindFirstChild("Realm")
-    local text = realmValue and tostring(realmValue.Value) or ""
-    return tonumber(text:match("%d+"))
-end
-
-local function teleportToRealmButtonTop()
-    local character = player.Character or player.CharacterAdded:Wait()
-    local rootPart = character:FindFirstChild("HumanoidRootPart")
-    local realmButton = workspace:WaitForChild("RealmButton", 2)
-    local realmButtonTop = realmButton and realmButton:WaitForChild("RealmButtonTop", 2)
-
-    if rootPart and realmButtonTop then
-        rootPart.CFrame = realmButtonTop.CFrame + Vector3.new(0, 4, 0)
-    end
-
-    return realmButtonTop
-end
-
-local function fireBreakthrough()
-    local ok, err = pcall(function()
-        local realmButtonTop = teleportToRealmButtonTop()
-
-        if realmButtonTop and typeof(firesignal) == "function" then
-            firesignal(remotes.realmPress.OnClientEvent, realmButtonTop, false)
-        else
-            remotes.realmPress:FireServer()
-        end
-    end)
-
-    if ok then
-        state.stats.breakthroughAttempts += 1
-    else
-        state.stats.errors += 1
-        warn("[ImmortalityAuto] breakthrough failed: " .. tostring(err))
     end
 end
 
@@ -341,7 +300,7 @@ footer.Name = "Footer"
 footer.Size = UDim2.new(1, 0, 0, 52)
 footer.BackgroundTransparency = 1
 footer.Font = Enum.Font.Gotham
-footer.Text = "Insight upgrades buy More Insight only. Intervals are seconds."
+footer.Text = "Priority: More Insight first, then Qi/Luck mixed in. Intervals are seconds."
 footer.TextColor3 = Color3.fromRGB(163, 171, 198)
 footer.TextSize = 12
 footer.TextWrapped = true
@@ -391,7 +350,7 @@ loopEvery("qiInterval", "autoQi", function()
 end)
 
 loopEvery("breakthroughInterval", "autoBreakthrough", function()
-    fireBreakthrough()
+    safeFire("breakthroughs", remotes.realmPress)
 end)
 
 loopEvery("qiUpgradeInterval", "autoQiUpgrades", function()
@@ -412,19 +371,10 @@ end)
 
 task.spawn(function()
     while state.running do
-        local currentRealm = getRealm()
-        if currentRealm then
-            if state.lastRealm and currentRealm > state.lastRealm then
-                state.stats.breakthroughs += currentRealm - state.lastRealm
-            end
-            state.lastRealm = currentRealm
-        end
-
         status.Text = string.format(
-            "Qi: %d | Breakthroughs: %d/%d | Qi upgrades: %d\nInsight resets: %d | Insight upgrades: %d | Errors: %d",
+            "Qi: %d | Breakthroughs: %d | Qi upgrades: %d\nInsight resets: %d | Insight upgrades: %d | Errors: %d",
             state.stats.qiClicks,
             state.stats.breakthroughs,
-            state.stats.breakthroughAttempts,
             state.stats.qiUpgrades,
             state.stats.insightResets,
             state.stats.insightUpgrades,
